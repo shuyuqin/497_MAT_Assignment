@@ -22,6 +22,7 @@ from torch.autograd import Variable
 from tqdm import tqdm
 import torch.tensor as tensor
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class conv_block(nn.Module):
     def __init__(self, t_size, n_step):
@@ -100,25 +101,33 @@ class identity_block(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, num_k_sparse, n_step, number_of_blocks):
+    def __init__(self, step_size, number_of_blocks, embedding_size,covld_size=128, num_k_sparse=10, bidirect = True):
         super(Encoder, self).__init__()
+        blocks=[]
+        for i in range(number_of_blocks):
+                blocks.append(conv_block(t_size=covld_size, n_step=step_size//(2**i)))
+                blocks.append(identity_block(t_size=covld_size, n_step=step_size//(2**i)))
+                blocks.append(nn.MaxPool1d(2, stride=2)) 
+        self.block_layer = nn.ModuleList(blocks)
+        self.layers=len(blocks)
         self.num_k_sparse = num_k_sparse
-        self.cov1d = nn.Conv1d(1, 128, 3, stride=1, padding=1, padding_mode='zeros')
-        self.cov1d_1 = nn.Conv1d(128, 1, 3, stride=1, padding=1, padding_mode='zeros')
-        self.conv_block_1 = conv_block(t_size=128, n_step=96)
-        self.conv_block_2 = conv_block(t_size=128, n_step=48)
-        self.conv_block_3 = conv_block(t_size=128, n_step=24)
-        self.iden_block_1 = identity_block(t_size=128, n_step=96)
-        self.iden_block_2 = identity_block(t_size=128, n_step=48)
-        self.iden_block_3 = identity_block(t_size=128, n_step=24)
+        self.cov1d = nn.Conv1d(1, covld_size, 3, stride=1, padding=1, padding_mode='zeros')
+        self.cov1d_1 = nn.Conv1d(covld_size, 1, 3, stride=1, padding=1, padding_mode='zeros')
+        
+#         self.conv_block_1 = conv_block(t_size=covld_size, n_step=96)
+#         self.conv_block_2 = conv_block(t_size=covld_size, n_step=48)
+#         self.conv_block_3 = conv_block(t_size=covld_size, n_step=24)
+#         self.iden_block_1 = identity_block(t_size=covld_size, n_step=96)
+#         self.iden_block_2 = identity_block(t_size=covld_size, n_step=48)
+#         self.iden_block_3 = identity_block(t_size=covld_size, n_step=24)
         self.relu_1 = nn.ReLU()
         self.relu_2 = nn.ReLU()
         self.relu_3 = nn.ReLU()
-        self.maxpool_1 = nn.MaxPool1d(2, stride=2)
-        self.maxpool_2 = nn.MaxPool1d(2, stride=2)
-        self.maxpool_3 = nn.MaxPool1d(2, stride=2)
-        self.lstm = nn.LSTM(12, 8, batch_first=True, bidirectional=True)
-        self.dense = nn.Linear(16, 8)
+#         self.maxpool_1 = nn.MaxPool1d(2, stride=2)
+#         self.maxpool_2 = nn.MaxPool1d(2, stride=2)
+#         self.maxpool_3 = nn.MaxPool1d(2, stride=2)
+        self.lstm = nn.LSTM(12, 8, batch_first=True, bidirectional=bidirect)
+        self.dense = nn.Linear(16, embedding_size)
 
     #        self.sd = nn.Linear(32,8)
     #        self.logspike = nn.Linear(32,8)
@@ -126,15 +135,17 @@ class Encoder(nn.Module):
     def forward(self, x):
         x = x.transpose(1, 2)
         x = self.cov1d(x)
-        x = self.iden_block_1(x)
-        x = self.conv_block_1(x)
-        x = self.maxpool_1(x)
-        x = self.iden_block_2(x)
-        x = self.conv_block_2(x)
-        x = self.maxpool_2(x)
-        x = self.iden_block_3(x)
-        x = self.conv_block_3(x)
-        x = self.maxpool_3(x)
+        for i in range(self.layers):
+            x = self.block_layer[i](x)
+#         x = self.iden_block_1(x)
+#         x = self.conv_block_1(x)
+#         x = self.maxpool_1(x)
+#         x = self.iden_block_2(x)
+#         x = self.conv_block_2(x)
+#         x = self.maxpool_2(x)
+#         x = self.iden_block_3(x)
+#         x = self.conv_block_3(x)
+#         x = self.maxpool_3(x)
         x = self.cov1d_1(x)
         encode, (_, __) = self.lstm(x)
         selection = self.dense(encode)
@@ -168,35 +179,52 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, embedding_size, number_of_blocks,uplist,covld_size=128):
         super(Decoder, self).__init__()
-        self.cov1d = nn.Conv1d(128, 1, 3, stride=1, padding=1, padding_mode='zeros')
-        self.conv_block_1 = conv_block(t_size=128, n_step=8)
-        self.conv_block_2 = conv_block(t_size=128, n_step=16)
-        self.conv_block_3 = conv_block(t_size=128, n_step=32)
-        self.conv_block_4 = conv_block(t_size=128, n_step=96)
-        self.iden_block_1 = identity_block(t_size=128, n_step=8)
-        self.iden_block_2 = identity_block(t_size=128, n_step=16)
-        self.iden_block_3 = identity_block(t_size=128, n_step=32)
-        self.iden_block_4 = identity_block(t_size=128, n_step=96)
-        self.upsample_1 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
-        self.upsample_2 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
-        self.upsample_3 = nn.Upsample(scale_factor=3, mode='linear', align_corners=True)
-
+        blocks=[]
+        self.cov1d = nn.Conv1d(covld_size, 1, 3, stride=1, padding=1, padding_mode='zeros')
+        feature_size = embedding_size
+        for i in range(number_of_blocks):
+            if i == number_of_blocks-1:
+                blocks.append(conv_block(covld_size,feature_size))
+                blocks.append(identity_block(covld_size,feature_size))   
+            else:
+                blocks.append(conv_block(covld_size,feature_size))
+                blocks.append(identity_block(covld_size,feature_size))
+                
+                blocks.append(nn.Upsample(scale_factor=uplist[i], mode='linear', align_corners=True))
+                
+                feature_size = feature_size*uplist[i]
+#         self.conv_block_1 = conv_block(t_size=covld_size, n_step=embedding_size)
+#         self.conv_block_2 = conv_block(t_size=covld_size, n_step=16)
+#         self.conv_block_3 = conv_block(t_size=covld_size, n_step=32)
+#         self.conv_block_4 = conv_block(t_size=covld_size, n_step=96)
+#         self.iden_block_1 = identity_block(t_size=covld_size, n_step=8)
+#         self.iden_block_2 = identity_block(t_size=covld_size, n_step=16)
+#         self.iden_block_3 = identity_block(t_size=covld_size, n_step=32)
+#         self.iden_block_4 = identity_block(t_size=covld_size, n_step=96)
+#         self.upsample_1 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
+#         self.upsample_2 = nn.Upsample(scale_factor=2, mode='linear', align_corners=True)
+#         self.upsample_3 = nn.Upsample(scale_factor=3, mode='linear', align_corners=True)
+        self.block_layers = nn.ModuleList(blocks)
+        self.layers=len(blocks)
+        
     def forward(self, x):
         x = x.transpose(1, 2)
         x = x.repeat([1, 128, 1])
-        x = self.iden_block_1(x)
-        x = self.conv_block_1(x)
-        x = self.upsample_1(x)
-        x = self.iden_block_2(x)
-        x = self.conv_block_2(x)
-        x = self.upsample_2(x)
-        x = self.iden_block_3(x)
-        x = self.conv_block_3(x)
-        x = self.upsample_3(x)
-        x = self.iden_block_4(x)
-        x = self.conv_block_4(x)
+        for i in range(self.layers):
+            x = self.block_layers[i](x)
+#         x = self.iden_block_1(x)
+#         x = self.conv_block_1(x)
+#         x = self.upsample_1(x)
+#         x = self.iden_block_2(x)
+#         x = self.conv_block_2(x)
+#         x = self.upsample_2(x)
+#         x = self.iden_block_3(x)
+#         x = self.conv_block_3(x)
+#         x = self.upsample_3(x)
+#         x = self.iden_block_4(x)
+#         x = self.conv_block_4(x)
         x = self.cov1d(x)
         x = x.transpose(1, 2)
 
@@ -333,4 +361,115 @@ class Regularization_1(nn.Module):
         print("---------------regularization weight---------------")
         for name, w in weight_list:
             print(name)
+
+            
+def loss_function(model,encoder,decoder,train_iterator,optimizer,coef, coef1, coef2):
+    weight_decay = coef
+    weight_decay_1 = coef1
+    entroy_coe = coef2
+
+    # set the train mode
+    model.train()
+
+    # loss of the epoch
+    train_loss = 0
+    entropyloss = 0
+
+    #    for i, x in enumerate(train_iterator):
+    for x in tqdm(train_iterator, leave=True, total=len(train_iterator)):
+        # reshape the data into [batch_size, 784]
+        #        if weight_decay>0:
+        #            reg_loss=Regularization(model, weight_decay, p=1).to(device)
+        #        else:
+        #            print("no regularization")
+
+        if weight_decay_1 > 0:
+            reg_loss_2 = Regularization_1(model, weight_decay_1, p=2).to(device)
+        else:
+            print("no regularization")
+
+        entropy_loss = Entropy_Loss(entroy_coe).to(device)
+        x = x.to(device, dtype=torch.float)
+
+        # update the gradients to zero
+        optimizer.zero_grad()
+
+        # forward pass
+        #        predicted_x = model(x)
+        embedding = encoder(x)
+
+        if weight_decay > 0:
+            reg_loss_1 = weight_decay * torch.norm(embedding, 1).to(device)
+        else:
+            print("no regularization")
+
+        predicted_x = decoder(embedding)
+
+        # reconstruction loss
+        loss = F.mse_loss(x, predicted_x, reduction='mean')
+
+        if weight_decay > 0:
+            loss = loss + reg_loss_2(model) + reg_loss_1
+
+        Eloss = entropy_loss(embedding)
+        loss = loss + Eloss
+        entropyloss = entropyloss + Eloss
+        # backward pass
+        train_loss += loss.item()
+
+        loss.backward()
+        # update the weights
+        optimizer.step()
+
+    return train_loss, entropyloss
+
+
+def Train(model,encoder,decoder,train_iterator,optimizer,coef,coef_1,coef_2,epochs,file_path,save_the_best=True):
+    N_EPOCHS = epochs
+    best_train_loss = float('inf')
+    if save_the_best == True:
+        path = file_path+'.pkl'
+    else:
+        path = file_path+'-%s.pkl'
+#    path = file_path
+    for epoch in range(N_EPOCHS):
+
+        train = loss_function(model,encoder,decoder,train_iterator,optimizer,coef,coef_1,coef_2)
+        train_loss,entropy_loss = train
+        train_loss /= len(train_iterator)
+        entropy_loss /= len(train_iterator)
+        print(f'Epoch {epoch}, Train Loss: {train_loss:.4f}')
+        print(f'......... Entropy Loss: {entropy_loss:.4f}')
+        print('.............................')
+
+        if best_train_loss > train_loss:
+            best_train_loss = train_loss
+            patience_counter = 1
+            checkpoint = {
+                "net": model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                "epoch": epoch,
+                "encoder": encoder.state_dict(), 
+                'decoder': decoder.state_dict()
+            }
+            if epoch >=0:
+                if save_the_best == True:
+                    torch.save(checkpoint, path)
+                else:
+                    torch.save(checkpoint, path % (str(epoch)))
+        else:
+            patience_counter += 1
+
+        if patience_counter > 15000:
+            break 
+
+
+
+
+
+
+
+
+
+
 
